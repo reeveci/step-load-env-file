@@ -18,4 +18,4 @@ ENV FILE=.env
 ENV LOAD_ALL=false
 # ENV_<name>: Variables to be loaded from the file and their corresponding runtime variable names to be using in Reeve
 
-CMD ["reeve-step"]
+ENTRYPOINT ["reeve-step"]
