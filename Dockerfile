@@ -1,7 +1,7 @@
 FROM golang AS builder
 
-COPY . /app
 WORKDIR /app
+COPY . .
 
 ENV GOFLAGS="-buildvcs=false"
 ENV CGO_ENABLED=0
