@@ -3,12 +3,15 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/bmatcuk/doublestar/v4"
+	"github.com/google/shlex"
 	"github.com/joho/godotenv"
 )
 
@@ -19,43 +22,60 @@ func main() {
 		os.Exit(1)
 	}
 
+	var files []string
+	if file := os.Getenv(("FILE")); file != "" {
+		fmt.Println("WARNING: The FILE param is deprecated and will stop working in a future version! Use FILES instead.")
+		files = []string{file}
+	} else {
+		filePatterns, err := shlex.Split(os.Getenv("FILES"))
+		if err != nil {
+			panic(fmt.Sprintf("error parsing file pattern list - %s", err))
+		}
+		files = make([]string, 0, len(filePatterns))
+		for _, pattern := range filePatterns {
+			matches, err := doublestar.FilepathGlob(pattern, doublestar.WithFilesOnly(), doublestar.WithFailOnIOErrors(), doublestar.WithFailOnPatternNotExist())
+			if err != nil {
+				panic(fmt.Sprintf(`error parsing file pattern "%s" - %s`, pattern, err))
+			}
+			files = append(files, matches...)
+		}
+	}
+	files = distinct(files)
+	sort.Strings(files)
+
 	var params []string
 	err := json.Unmarshal([]byte(os.Getenv("REEVE_PARAMS")), &params)
 	if err != nil {
 		panic(fmt.Sprintf("error parsing REEVE_PARAMS - %s", err))
 	}
 
-	envFile := os.Getenv("FILE")
-	if envFile == "" {
-		panic("missing env file name")
-	}
-
 	loadAll := os.Getenv("LOAD_ALL") == "true"
 
-	var env map[string]string
-	env, err = godotenv.Read(filepath.Join("/reeve/src", envFile))
-	if err != nil {
-		panic(fmt.Sprintf("error loading \"%s\" - %s", envFile, err))
+	env := make(map[string]string)
+	for _, filename := range files {
+		fileEnv, err := godotenv.Read(filename)
+		if err != nil {
+			panic(fmt.Sprintf("error loading \"%s\" - %s", filename, err))
+		}
+		fmt.Printf("Loading %s...\n", filename)
+		maps.Copy(env, fileEnv)
 	}
 
-	var varNames map[string]string
+	varNames := make(map[string]string, len(env))
 	if loadAll {
-		varNames = make(map[string]string, len(env))
 		for name := range env {
 			varNames[name] = name
 		}
-	} else {
-		varNames = make(map[string]string, len(params))
-		for _, param := range params {
-			if !strings.HasPrefix(param, "ENV_") {
-				continue
-			}
+	}
+	for _, param := range params {
+		if !strings.HasPrefix(param, "ENV_") {
+			continue
+		}
 
-			name := strings.TrimPrefix(param, "ENV_")
-			varName := os.Getenv(param)
-			if name != "" && varName != "" {
-				varNames[name] = varName
-			}
+		name := strings.TrimPrefix(param, "ENV_")
+		varName := os.Getenv(param)
+		if name != "" && varName != "" {
+			varNames[name] = varName
 		}
 	}
 
@@ -63,8 +83,23 @@ func main() {
 		value := env[name]
 		response, err := http.Post(fmt.Sprintf("%s/api/v1/var?key=%s", reeveAPI, url.QueryEscape(varName)), "text/plain", strings.NewReader(value))
 		if err != nil {
+			panic(fmt.Sprintf("error setting var - %s", err))
+		}
+		if response.StatusCode != http.StatusOK {
 			panic(fmt.Sprintf("setting var returned status %v", response.StatusCode))
 		}
 		fmt.Printf("Set %s=%s\n", varName, value)
 	}
+}
+
+func distinct[T comparable](items []T) []T {
+	keys := make(map[T]struct{})
+	result := make([]T, 0, len(items))
+	for _, item := range items {
+		if _, exists := keys[item]; !exists {
+			keys[item] = struct{}{}
+			result = append(result, item)
+		}
+	}
+	return result
 }
